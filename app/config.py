@@ -16,6 +16,7 @@ class Settings:
     provider_timeout_seconds: float = 10.0
     circuit_breaker_failure_threshold: int = 3
     circuit_breaker_recovery_seconds: float = 30.0
+    max_input_characters: int = 100_000
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -33,4 +34,5 @@ class Settings:
             provider_timeout_seconds=float(os.getenv("PROVIDER_TIMEOUT_SECONDS", "10")),
             circuit_breaker_failure_threshold=int(os.getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3")),
             circuit_breaker_recovery_seconds=float(os.getenv("CIRCUIT_BREAKER_RECOVERY_SECONDS", "30")),
+            max_input_characters=int(os.getenv("MAX_INPUT_CHARACTERS", "100000")),
         )

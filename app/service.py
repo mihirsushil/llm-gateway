@@ -7,6 +7,7 @@ from typing import Callable
 
 from .cache import TTLCache
 from .circuit_breaker import CircuitBreaker, CircuitOpen
+from .input_guard import InputGuard
 from .models import ChatCompletionRequest, ChatCompletionResponse
 from .provider import ChatProvider, PermanentProviderError, TransientProviderError
 from .rate_limit import TokenBucketRateLimiter
@@ -30,6 +31,7 @@ class GatewayService:
         limiter: TokenBucketRateLimiter,
         cache: TTLCache[ChatCompletionResponse],
         circuit_breaker: CircuitBreaker,
+        input_guard: InputGuard,
         retry_attempts: int,
         retry_base_seconds: float,
         sleeper: Callable[[float], None] = time.sleep,
@@ -39,6 +41,7 @@ class GatewayService:
         self.limiter = limiter
         self.cache = cache
         self.circuit_breaker = circuit_breaker
+        self.input_guard = input_guard
         self.retry_attempts = retry_attempts
         self.retry_base_seconds = retry_base_seconds
         self.sleeper = sleeper
@@ -52,6 +55,7 @@ class GatewayService:
         return hashlib.sha256(canonical_request.encode()).hexdigest()
 
     def complete(self, api_key: str, request: ChatCompletionRequest) -> CompletionResult:
+        self.input_guard.validate(request)
         self.limiter.consume(api_key)
         cache_key = self._cache_key(request)
         cached = self.cache.get(cache_key)

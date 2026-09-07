@@ -39,3 +39,15 @@ completion requests correctly return an upstream-unavailable response.
 
 The tests exercise real HTTP requests against the FastAPI application using a
 fake upstream provider, including rate-limit, cache, retry, and failure paths.
+
+## Input policy
+
+Before a cache miss reaches the upstream, the gateway applies a total content
+size cap and blocks obvious personal email/US-phone details and a small set of
+high-confidence prompt-injection phrases. It rejects rather than rewrites
+those requests, so content is never silently changed and redacted requests
+cannot collide in the cache.
+
+This is a practical deterministic policy layer, **not** a general solution to
+prompt injection. More sophisticated attacks need application-specific trust
+boundaries, tool permissions, and evaluation—not a larger regex list.

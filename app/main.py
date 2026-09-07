@@ -7,6 +7,7 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from .cache import TTLCache
 from .circuit_breaker import CircuitBreaker
 from .config import Settings
+from .input_guard import InputGuard, InputRejected
 from .models import ChatCompletionRequest, ChatCompletionResponse
 from .provider import ChatProvider, OpenAICompatibleProvider, UnconfiguredProvider
 from .rate_limit import RateLimitExceeded, TokenBucketRateLimiter
@@ -45,6 +46,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
             settings.circuit_breaker_failure_threshold,
             settings.circuit_breaker_recovery_seconds,
         ),
+        input_guard=InputGuard(settings.max_input_characters),
         retry_attempts=settings.retry_attempts,
         retry_base_seconds=settings.retry_base_seconds,
         logger=_gateway_logger(),
@@ -72,6 +74,11 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
         try:
             result = app.state.service.complete(x_api_key, request)
+        except InputRejected as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": error.reason, "message": "request blocked by input safety policy"},
+            ) from error
         except RateLimitExceeded as error:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

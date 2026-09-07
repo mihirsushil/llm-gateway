@@ -3,7 +3,7 @@
 An OpenAI-compatible proxy that demonstrates the reliability controls an LLM
 application needs between a client and an upstream provider. The first phase
 includes per-key token-bucket rate limiting, exact-match TTL caching, timeout
-and transient-error retries, and structured JSON request logs.
+and transient-error retries, circuit breaking, and structured JSON request logs.
 
 ## Architecture
 
@@ -12,9 +12,9 @@ OpenAI-compatible client
         ↓
 POST /v1/chat/completions
         ↓
-API-key validation → token bucket → exact cache → retrying provider client
-        ↓                                      ↓
-structured JSON logs                     OpenAI-compatible upstream
+API-key validation → token bucket → exact cache → circuit breaker → retrying provider client
+        ↓                                                        ↓
+structured JSON logs                                       OpenAI-compatible upstream
 ```
 
 ## Run locally

@@ -1,11 +1,11 @@
 import logging
 import math
-import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Response, status
 
 from .cache import TTLCache
+from .circuit_breaker import CircuitBreaker
 from .config import Settings
 from .models import ChatCompletionRequest, ChatCompletionResponse
 from .provider import ChatProvider, OpenAICompatibleProvider, UnconfiguredProvider
@@ -24,15 +24,30 @@ def _build_provider(settings: Settings) -> ChatProvider:
     return UnconfiguredProvider()
 
 
+def _gateway_logger() -> logging.Logger:
+    logger = logging.getLogger("llm_gateway")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
 def create_app(settings: Settings | None = None, provider: ChatProvider | None = None) -> FastAPI:
     settings = settings or Settings.from_environment()
     service = GatewayService(
         provider=provider or _build_provider(settings),
         limiter=TokenBucketRateLimiter(settings.rate_limit_per_minute, settings.rate_limit_burst),
         cache=TTLCache(settings.cache_ttl_seconds),
+        circuit_breaker=CircuitBreaker(
+            settings.circuit_breaker_failure_threshold,
+            settings.circuit_breaker_recovery_seconds,
+        ),
         retry_attempts=settings.retry_attempts,
         retry_base_seconds=settings.retry_base_seconds,
-        logger=logging.getLogger("llm_gateway"),
+        logger=_gateway_logger(),
     )
 
     @asynccontextmanager

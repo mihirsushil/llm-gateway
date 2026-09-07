@@ -14,6 +14,8 @@ class Settings:
     retry_attempts: int = 3
     retry_base_seconds: float = 0.1
     provider_timeout_seconds: float = 10.0
+    circuit_breaker_failure_threshold: int = 3
+    circuit_breaker_recovery_seconds: float = 30.0
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -29,4 +31,6 @@ class Settings:
             retry_attempts=int(os.getenv("RETRY_ATTEMPTS", "3")),
             retry_base_seconds=float(os.getenv("RETRY_BASE_SECONDS", "0.1")),
             provider_timeout_seconds=float(os.getenv("PROVIDER_TIMEOUT_SECONDS", "10")),
+            circuit_breaker_failure_threshold=int(os.getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3")),
+            circuit_breaker_recovery_seconds=float(os.getenv("CIRCUIT_BREAKER_RECOVERY_SECONDS", "30")),
         )

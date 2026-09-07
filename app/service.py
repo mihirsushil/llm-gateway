@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .cache import TTLCache
+from .circuit_breaker import CircuitBreaker, CircuitOpen
 from .models import ChatCompletionRequest, ChatCompletionResponse
 from .provider import ChatProvider, PermanentProviderError, TransientProviderError
 from .rate_limit import TokenBucketRateLimiter
@@ -28,6 +29,7 @@ class GatewayService:
         provider: ChatProvider,
         limiter: TokenBucketRateLimiter,
         cache: TTLCache[ChatCompletionResponse],
+        circuit_breaker: CircuitBreaker,
         retry_attempts: int,
         retry_base_seconds: float,
         sleeper: Callable[[float], None] = time.sleep,
@@ -36,6 +38,7 @@ class GatewayService:
         self.provider = provider
         self.limiter = limiter
         self.cache = cache
+        self.circuit_breaker = circuit_breaker
         self.retry_attempts = retry_attempts
         self.retry_base_seconds = retry_base_seconds
         self.sleeper = sleeper
@@ -56,17 +59,26 @@ class GatewayService:
             self.logger.info(json.dumps({"event": "completion", "cache_hit": True, "attempts": 0}))
             return CompletionResult(response=cached, cache_hit=True, attempts=0)
 
+        try:
+            self.circuit_breaker.allow_request()
+        except CircuitOpen as error:
+            self.logger.warning(json.dumps({"event": "circuit_open"}))
+            raise UpstreamUnavailable("upstream circuit is open; retry later") from error
+
         for attempt in range(1, self.retry_attempts + 1):
             try:
                 response = self.provider.complete(request)
+                self.circuit_breaker.record_success()
                 self.cache.set(cache_key, response)
                 self.logger.info(json.dumps({"event": "completion", "cache_hit": False, "attempts": attempt}))
                 return CompletionResult(response=response, cache_hit=False, attempts=attempt)
             except PermanentProviderError as error:
+                self.circuit_breaker.record_failure()
                 self.logger.warning(json.dumps({"event": "provider_error", "retryable": False}))
                 raise UpstreamUnavailable(str(error)) from error
             except TransientProviderError as error:
                 if attempt == self.retry_attempts:
+                    self.circuit_breaker.record_failure()
                     self.logger.warning(json.dumps({"event": "provider_error", "retryable": True, "attempts": attempt}))
                     raise UpstreamUnavailable("upstream failed after retry budget") from error
                 self.sleeper(self.retry_base_seconds * (2 ** (attempt - 1)))

@@ -8,7 +8,7 @@ from app.config import Settings
 from app.circuit_breaker import CircuitBreaker, CircuitOpen
 from app.main import create_app
 from app.models import ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice
-from app.provider import TransientProviderError
+from app.provider import FallbackProvider, PermanentProviderError, TransientProviderError
 
 
 class FakeProvider:
@@ -198,3 +198,100 @@ def test_input_guard_enforces_a_total_content_size_cap_before_the_provider():
     assert result.status_code == 400
     assert result.json()["detail"]["code"] == "input_too_large"
     assert provider.calls == 0
+
+
+def test_output_guard_blocks_an_empty_completion():
+    provider = FakeProvider([completion("   ")])
+    app = app_with(provider)
+
+    result = post(app, request_body(), {"X-API-Key": "test-key"})
+
+    assert result.status_code == 502
+    assert result.json()["detail"]["code"] == "empty_completion"
+
+
+def test_output_guard_enforces_a_total_output_size_cap():
+    provider = FakeProvider([completion("this is longer than ten characters")])
+    app = app_with(provider, max_output_characters=10)
+
+    result = post(app, request_body(), {"X-API-Key": "test-key"})
+
+    assert result.status_code == 502
+    assert result.json()["detail"]["code"] == "output_too_large"
+
+
+def test_output_guard_blocks_upstream_secret_leaking_into_content():
+    provider = FakeProvider([completion("your key is sk-upstream-secret")])
+    settings = Settings(
+        api_keys=frozenset({"test-key"}),
+        upstream_base_url="https://example.invalid",
+        upstream_api_key="sk-upstream-secret",
+        upstream_model=None,
+    )
+    app = create_app(settings=settings, provider=provider)
+
+    result = post(app, request_body(), {"X-API-Key": "test-key"})
+
+    assert result.status_code == 502
+    assert result.json()["detail"]["code"] == "upstream_secret_leak"
+
+
+def test_valid_completion_still_succeeds_and_is_cached_with_output_guard_enabled():
+    provider = FakeProvider([completion("a perfectly fine answer")])
+    app = app_with(provider)
+    headers = {"X-API-Key": "test-key"}
+
+    first = post(app, request_body(), headers)
+    second = post(app, request_body(), headers)
+
+    assert first.status_code == second.status_code == 200
+    assert second.headers["X-Cache"] == "HIT"
+    assert provider.calls == 1
+
+
+def test_fallback_provider_uses_secondary_when_primary_has_a_transient_failure():
+    primary = FakeProvider([TransientProviderError("primary down")])
+    secondary = FakeProvider([completion("from secondary")])
+    fallback = FallbackProvider(primary, secondary)
+
+    request = ChatCompletionRequest(model="test-model", messages=[ChatMessage(role="user", content="hi")])
+    result = fallback.complete(request)
+
+    assert result.choices[0].message.content == "from secondary"
+    assert primary.calls == 1
+    assert secondary.calls == 1
+
+
+def test_fallback_provider_uses_secondary_when_primary_has_a_permanent_failure():
+    primary = FakeProvider([PermanentProviderError("bad primary key")])
+    secondary = FakeProvider([completion("from secondary")])
+    fallback = FallbackProvider(primary, secondary)
+
+    request = ChatCompletionRequest(model="test-model", messages=[ChatMessage(role="user", content="hi")])
+    result = fallback.complete(request)
+
+    assert result.choices[0].message.content == "from secondary"
+    assert primary.calls == 1
+    assert secondary.calls == 1
+
+
+def test_fallback_provider_does_not_call_secondary_when_primary_succeeds():
+    primary = FakeProvider([completion("from primary")])
+    secondary = FakeProvider([completion("from secondary")])
+    fallback = FallbackProvider(primary, secondary)
+
+    request = ChatCompletionRequest(model="test-model", messages=[ChatMessage(role="user", content="hi")])
+    result = fallback.complete(request)
+
+    assert result.choices[0].message.content == "from primary"
+    assert secondary.calls == 0
+
+
+def test_fallback_provider_propagates_secondary_failure_when_both_fail():
+    primary = FakeProvider([TransientProviderError("primary down")])
+    secondary = FakeProvider([TransientProviderError("secondary down too")])
+    fallback = FallbackProvider(primary, secondary)
+
+    request = ChatCompletionRequest(model="test-model", messages=[ChatMessage(role="user", content="hi")])
+    with pytest.raises(TransientProviderError):
+        fallback.complete(request)

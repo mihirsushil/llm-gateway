@@ -9,20 +9,32 @@ from .circuit_breaker import CircuitBreaker
 from .config import Settings
 from .input_guard import InputGuard, InputRejected
 from .models import ChatCompletionRequest, ChatCompletionResponse
-from .provider import ChatProvider, OpenAICompatibleProvider, UnconfiguredProvider
+from .output_guard import OutputGuard, OutputRejected
+from .provider import ChatProvider, FallbackProvider, OpenAICompatibleProvider, UnconfiguredProvider
 from .rate_limit import RateLimitExceeded, TokenBucketRateLimiter
 from .service import GatewayService, UpstreamUnavailable
 
 
 def _build_provider(settings: Settings) -> ChatProvider:
-    if settings.upstream_base_url and settings.upstream_api_key:
-        return OpenAICompatibleProvider(
-            base_url=settings.upstream_base_url,
-            api_key=settings.upstream_api_key,
-            default_model=settings.upstream_model,
-            timeout_seconds=settings.provider_timeout_seconds,
-        )
-    return UnconfiguredProvider()
+    if not (settings.upstream_base_url and settings.upstream_api_key):
+        return UnconfiguredProvider()
+
+    primary = OpenAICompatibleProvider(
+        base_url=settings.upstream_base_url,
+        api_key=settings.upstream_api_key,
+        default_model=settings.upstream_model,
+        timeout_seconds=settings.provider_timeout_seconds,
+    )
+    if not (settings.fallback_base_url and settings.fallback_api_key):
+        return primary
+
+    secondary = OpenAICompatibleProvider(
+        base_url=settings.fallback_base_url,
+        api_key=settings.fallback_api_key,
+        default_model=settings.fallback_model or settings.upstream_model,
+        timeout_seconds=settings.provider_timeout_seconds,
+    )
+    return FallbackProvider(primary, secondary)
 
 
 def _gateway_logger() -> logging.Logger:
@@ -47,6 +59,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
             settings.circuit_breaker_recovery_seconds,
         ),
         input_guard=InputGuard(settings.max_input_characters),
+        output_guard=OutputGuard(settings.max_output_characters, settings.upstream_api_key),
         retry_attempts=settings.retry_attempts,
         retry_base_seconds=settings.retry_base_seconds,
         logger=_gateway_logger(),
@@ -84,6 +97,11 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="rate limit exceeded",
                 headers={"Retry-After": str(max(1, math.ceil(error.retry_after_seconds)))},
+            ) from error
+        except OutputRejected as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={"code": error.reason, "message": "upstream response blocked by output safety policy"},
             ) from error
         except UpstreamUnavailable as error:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error

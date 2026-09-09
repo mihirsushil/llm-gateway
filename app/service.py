@@ -9,6 +9,7 @@ from .cache import TTLCache
 from .circuit_breaker import CircuitBreaker, CircuitOpen
 from .input_guard import InputGuard
 from .models import ChatCompletionRequest, ChatCompletionResponse
+from .output_guard import OutputGuard, OutputRejected
 from .provider import ChatProvider, PermanentProviderError, TransientProviderError
 from .rate_limit import TokenBucketRateLimiter
 
@@ -32,6 +33,7 @@ class GatewayService:
         cache: TTLCache[ChatCompletionResponse],
         circuit_breaker: CircuitBreaker,
         input_guard: InputGuard,
+        output_guard: OutputGuard,
         retry_attempts: int,
         retry_base_seconds: float,
         sleeper: Callable[[float], None] = time.sleep,
@@ -42,6 +44,7 @@ class GatewayService:
         self.cache = cache
         self.circuit_breaker = circuit_breaker
         self.input_guard = input_guard
+        self.output_guard = output_guard
         self.retry_attempts = retry_attempts
         self.retry_base_seconds = retry_base_seconds
         self.sleeper = sleeper
@@ -72,6 +75,12 @@ class GatewayService:
         for attempt in range(1, self.retry_attempts + 1):
             try:
                 response = self.provider.complete(request)
+                try:
+                    self.output_guard.validate(response)
+                except OutputRejected as error:
+                    self.circuit_breaker.record_failure()
+                    self.logger.warning(json.dumps({"event": "output_rejected", "code": error.reason}))
+                    raise
                 self.circuit_breaker.record_success()
                 self.cache.set(cache_key, response)
                 self.logger.info(json.dumps({"event": "completion", "cache_hit": False, "attempts": attempt}))

@@ -1,3 +1,5 @@
+import json
+import logging
 import time
 from typing import Protocol
 
@@ -57,3 +59,26 @@ class OpenAICompatibleProvider:
             return ChatCompletionResponse.model_validate(response.json())
         except ValueError as error:
             raise PermanentProviderError("upstream returned an invalid completion payload") from error
+
+
+class FallbackProvider:
+    """Tries a secondary provider (a second upstream, or the same upstream on
+    a second API key) when the primary fails. A single provider/key outage
+    shouldn't fail every request if a working alternative is configured.
+
+    Falls back on both transient and permanent primary errors: a permanent
+    error (bad auth, exhausted quota) is permanent *for that key*, not
+    necessarily for a different provider or key.
+    """
+
+    def __init__(self, primary: ChatProvider, secondary: ChatProvider, logger: logging.Logger | None = None):
+        self.primary = primary
+        self.secondary = secondary
+        self.logger = logger or logging.getLogger("llm_gateway")
+
+    def complete(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
+        try:
+            return self.primary.complete(request)
+        except (TransientProviderError, PermanentProviderError) as error:
+            self.logger.warning(json.dumps({"event": "provider_fallback", "reason": str(error)}))
+            return self.secondary.complete(request)

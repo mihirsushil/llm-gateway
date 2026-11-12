@@ -38,3 +38,16 @@ class TokenBucketRateLimiter:
             if bucket.tokens < cost:
                 raise RateLimitExceeded((cost - bucket.tokens) / self.refill_rate)
             bucket.tokens -= cost
+
+    def refund(self, key: str, amount: float) -> None:
+        """Gives back tokens reserved by `consume()` that turned out unused
+        (for example, a TPM reservation sized to `max_tokens` when the
+        actual completion was shorter). Refunding a key with no bucket yet
+        is a no-op rather than an error."""
+        if amount <= 0:
+            return
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                return
+            bucket.tokens = min(self.burst, bucket.tokens + amount)
